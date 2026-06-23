@@ -350,7 +350,7 @@ X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.68\linewidth]{qwen_distill_dev60_final/training_artifacts/base4_to_base40/step_loss_curve_clean.png}
+  \includegraphics[width=0.68\linewidth]{figures/qwen_distill_dev60_final/training_artifacts/base4_to_base40/step_loss_curve_clean.png}
   \caption{base4-to-base40 adapter 训练损失曲线。浅色曲线为原始 per-step loss，红色曲线为滑动窗口平滑后的趋势，整体呈稳定下降。}
   \label{fig:distill-loss}
 \end{figure}
@@ -402,22 +402,22 @@ X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000000.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000000.png}
   \vspace{3pt}
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000004.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000004.png}
   \vspace{3pt}
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000020.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000020.png}
   \caption{蒸馏效果示例。每组从左至右为：输入、GT、qwen\_4step、qwen\_40step、qwen\_4step\_adapter、open\_lora4\_4step。}
   \label{fig:distill-examples-main}
 \end{figure}
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000052.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000052.png}
   \vspace{3pt}
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000019.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000019.png}
   \vspace{3pt}
-  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000038.png}
+  \includegraphics[width=\linewidth]{figures/qwen_distill_dev60_final/report/per_sample_grids/dev_000038.png}
   \caption{更多蒸馏案例与局限性示例。前一组展示 adapter 恢复到 40-step 水平的情况；后两组展示复杂空间编辑中仍可能出现局部伪影或边界模糊。}
   \label{fig:distill-examples-more}
 \end{figure}
