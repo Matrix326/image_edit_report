@@ -12,3 +12,7 @@ build/
 *.synctex.gz
 *.toc
 *.xdv
+
+# User-provided reference PDFs and local exports.
+report.pdf
+qwen2511_improve.pdf
