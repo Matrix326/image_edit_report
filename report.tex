@@ -1,4 +1,4 @@
-\documentclass[UTF8,11pt,a4paper]{ctexart}
+\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
 
 \usepackage[a4paper,left=2.2cm,right=2.2cm,top=2.0cm,bottom=2.2cm,headheight=15pt,headsep=0.35cm,footskip=0.75cm]{geometry}
 \usepackage{amsmath}
@@ -309,17 +309,22 @@ Qwen 编辑最准、主观效果最好，但偶发风格重绘导致 BG-SSIM 最
 
 \section{Method Improvement}
 
-\subsection{Qwen-Image-Edit 低步数蒸馏加速占位}
+\subsection{Qwen-Image-Edit 低步数蒸馏加速}
+\label{sec:distill}
 
-Qwen-Image-Edit 在高步数推理下通常具有较好的编辑质量，但推理耗时较长；当采样步数降低到 4-step 时，虽然速度明显提升，但容易出现背景退化、纹理漂移和局部细节损失。4-step 的主要失败并非语义理解失败，而是低步数生成导致的局部质量退化。因此，可以使用 40-step 输出作为 teacher，4-step 输出作为 student，通过轻量后处理模块学习从低步数结果到高步数结果的修正。
+Qwen-Image-Edit 在高步数推理下通常具有较好的编辑质量，但推理耗时较长；当采样步数降低到 4-step 时，虽然速度明显提升，但容易出现背景退化、纹理漂移和局部细节损失。我们的实验观察表明，4-step 的主要失败并非语义理解完全错误，而是低步数去噪路径带来的局部质量退化。因此，本节使用 40-step 输出作为 teacher，4-step 输出作为 student，通过轻量后处理模块学习从低步数结果到高步数结果的修正，在不修改 Qwen 主干模型的前提下降低推理成本。
+
+\subsubsection{动机}
+
+在 MagicBrush-dev 60 个样例上，Qwen-Image-Edit 40-step 具有较高编辑精度，但单样本推理耗时约 130 秒；直接降到 4-step 后，单样本耗时约 13.7 秒，但 SSIM、PSNR 和 BG-SSIM 明显下降。由于 4-step 与 40-step 输出来自同一模型，它们共享相同的语义理解能力和生成先验，差异主要集中在高频细节、边缘锐度和局部背景一致性。因此，我们将问题建模为图像空间的自蒸馏修正：冻结 Qwen，仅训练一个轻量 adapter，将快速 student 输出精炼到接近 teacher 的质量。
 
 \paragraph{方法框架。}
-设原图为 $I$，4-step student 输出为 $S=Qwen_4(I,p)$，40-step teacher 输出为 $T=Qwen_{40}(I,p)$。低步数蒸馏模块记为 $A_\theta$，目标是从 $(I,S)$ 中预测接近 teacher 的结果：
+设原图为 $I$，编辑指令为 $p$，4-step student 输出为 $S=Qwen_4(I,p)$，40-step teacher 输出为 $T=Qwen_{40}(I,p)$。低步数蒸馏模块记为 $A_\theta$，目标是从 $(I,S)$ 中预测接近 teacher 的结果：
 \[
 \hat T=A_\theta(I,S),\qquad
 \mathcal{L}=\mathcal{L}(\hat T,T).
 \]
-为了使修正尽量局部且可控，adapter 采用 gated residual 形式，输入为原图、student 输出和二者差分的拼接：
+为了使修正尽量局部且可控，adapter 采用 \textbf{gated residual} 形式，输入为原图、student 输出和二者差分的拼接：
 \[
 X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
 \]
@@ -327,9 +332,9 @@ X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
 \[
 \hat T=S+\alpha\odot\delta.
 \]
-其中 $\delta=\tanh(\delta_{\mathrm{raw}})\times0.25$ 用于限制单像素修正幅度，$\alpha=\sigma(\alpha_{\mathrm{raw}})$ 用于控制哪些区域需要修正。
+其中 $\delta=\tanh(\delta_{\mathrm{raw}})\times0.25$ 用于限制单像素修正幅度，$\alpha=\sigma(\alpha_{\mathrm{raw}})$ 用于控制哪些区域需要修正。三路输入的作用各不相同：$I$ 提供原图结构参考，$S$ 提供低步数编辑结果，$S-I$ 显式提示模型已经发生变化的位置。残差门控使 adapter 更倾向于“少改但有效”，避免退化为对整幅图像的重绘网络。
 
-\paragraph{训练目标与作用。}
+\paragraph{训练目标。}
 训练损失由像素重建、边缘纹理、结构一致性和门控稀疏项组成：
 \[
 \mathcal{L}
@@ -338,7 +343,90 @@ X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
 +0.05\mathcal{L}_{\mathrm{ssim}}
 +0.02\mathcal{L}_{\alpha}.
 \]
-其中 $\mathcal{L}_{\mathrm{recon}}$ 约束输出接近 teacher，$\mathcal{L}_{\mathrm{edge}}$ 强化边缘和纹理，$\mathcal{L}_{\mathrm{ssim}}$ 约束整体结构，$\mathcal{L}_{\alpha}$ 鼓励只在必要区域启用修正。该方法的定位是用极小额外开销弥补低步数推理的质量损失，具体训练曲线、运行时间和样例结果保留占位：\placeholder{补充 Qwen Distill 的 loss curve、速度表和案例图。}
+其中 $\mathcal{L}_{\mathrm{recon}}$ 约束输出接近 teacher，$\mathcal{L}_{\mathrm{edge}}$ 强化边缘和纹理，$\mathcal{L}_{\mathrm{ssim}}$ 约束整体结构，$\mathcal{L}_{\alpha}$ 鼓励只在必要区域启用修正。该方法的定位是用极小额外开销弥补低步数推理的质量损失。
+
+\paragraph{训练配置。}
+训练数据来自 MagicBrush~\cite{magicbrush} 训练集。训练前预先缓存每个样本的 Qwen-4step student 输出与 Qwen-40step teacher 输出，二者均使用 $\mathrm{cfg}=4.0$。Adapter 使用 AdamW 优化器，学习率 $3\times10^{-5}$，batch size 8；base4-to-base40 分支训练 54k+ optimization steps，open\_lora4-to-base40 分支配置保持一致。由于 Qwen 主干完全冻结，训练成本主要来自轻量卷积 adapter，远低于完整扩散模型微调。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.68\linewidth]{qwen_distill_dev60_final/training_artifacts/base4_to_base40/step_loss_curve_clean.png}
+  \caption{base4-to-base40 adapter 训练损失曲线。浅色曲线为原始 per-step loss，红色曲线为滑动窗口平滑后的趋势，整体呈稳定下降。}
+  \label{fig:distill-loss}
+\end{figure}
+
+\subsubsection{实验结果}
+
+为评估自训练 adapter 的有效性及其与现有蒸馏方案的互补性，我们在 MagicBrush-dev 60 个样例上比较五种配置：原始 qwen\_4step、原始 qwen\_40step、qwen\_4step\_adapter、加载开源 Qwen-Image-Distill-LoRA~\cite{qwen_distill_lora} 的 open\_lora4\_4step，以及 open\_lora4\_adapter。
+
+\begin{table}[H]
+  \centering
+  \footnotesize
+  \caption{蒸馏方案在 MagicBrush-dev 60 样例上的平均质量指标。$\uparrow$ 越高越好。}
+  \label{tab:distill-quality}
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Variant & SSIM$\uparrow$ & PSNR$\uparrow$ & BG-SSIM$\uparrow$ & BG-PSNR$\uparrow$ & Edit Chg. \\
+    \midrule
+    qwen\_4step & 0.7535 & 16.2793 & 0.6018 & 18.3761 & 0.0327 \\
+    qwen\_40step & 0.7804 & 17.9871 & 0.6910 & 20.2761 & 0.0150 \\
+    \textbf{qwen\_4step\_adapter} & \textbf{0.8213} & \textbf{19.2725} & \textbf{0.7453} & \textbf{21.7426} & \textbf{0.0133} \\
+    \midrule
+    open\_lora4\_4step & 0.8688 & 21.2100 & 0.8655 & 25.4724 & 0.0078 \\
+    open\_lora4\_adapter & 0.8687 & 21.1985 & 0.8647 & 25.4372 & 0.0079 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+结果表明，自训练 adapter 能显著改善原始 4-step 输出：SSIM 从 0.7535 提升至 0.8213，PSNR 提升约 2.99 dB，BG-SSIM 从 0.6018 提升至 0.7453，说明低步数推理中最明显的背景退化被有效缓解。值得注意的是，qwen\_4step\_adapter 在这些指标上超过了 40-step teacher，可能来自 teacher 监督与稀疏残差正则共同作用：adapter 并非简单复制 teacher，而是学习在局部必要区域修正 student，同时保留更稳定的背景区域。
+
+开源 LoRA 本身已取得更强结果，open\_lora4\_4step 的 SSIM 达到 0.8688，BG-SSIM 达到 0.8655。这说明潜空间/模型内部的低步数蒸馏能够从去噪轨迹层面改善结果；在其上继续叠加图像空间 adapter 基本没有增益，表明 LoRA 输出已接近当前设置下的质量上限。两类方法的定位不同：LoRA 是模型内部蒸馏，质量上限更高；adapter 是 model-agnostic 的即插即用后处理，训练和部署代价更低。
+
+\begin{table}[H]
+  \centering
+  \footnotesize
+  \caption{各方案单样本推理耗时对比。Adapter 额外开销小于 1\%。}
+  \label{tab:distill-speed}
+  \begin{tabular}{lrrr}
+    \toprule
+    Variant & Qwen 推理(s) & Adapter(s) & 总耗时(s) \\
+    \midrule
+    qwen\_40step & $\sim$130 & --- & $\sim$130 \\
+    qwen\_4step & $\sim$13.7 & --- & $\sim$13.7 \\
+    qwen\_4step\_adapter & $\sim$13.7 & 0.08 & $\sim$13.8 \\
+    open\_lora4\_4step & $\sim$6.8 & --- & $\sim$6.8 \\
+    open\_lora4\_adapter & $\sim$6.8 & 0.08 & $\sim$6.9 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000000.png}
+  \vspace{3pt}
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000004.png}
+  \vspace{3pt}
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000020.png}
+  \caption{蒸馏效果示例。每组从左至右为：输入、GT、qwen\_4step、qwen\_40step、qwen\_4step\_adapter、open\_lora4\_4step。}
+  \label{fig:distill-examples-main}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000052.png}
+  \vspace{3pt}
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000019.png}
+  \vspace{3pt}
+  \includegraphics[width=\linewidth]{qwen_distill_dev60_final/report/per_sample_grids/dev_000038.png}
+  \caption{更多蒸馏案例与局限性示例。前一组展示 adapter 恢复到 40-step 水平的情况；后两组展示复杂空间编辑中仍可能出现局部伪影或边界模糊。}
+  \label{fig:distill-examples-more}
+\end{figure}
+
+从可视化结果看，adapter 对背景色偏、肤色漂移和局部纹理退化有明显修复作用。例如 dev\_00 中 4-step 背景色调偏移，adapter 后背景一致性恢复；dev\_04 中 4-step 面部区域泛蓝，adapter 能修正肤色；dev\_20 中海面与天空细节更接近高步数结果。但对于需要复杂空间推理或大幅物体姿态变化的样例，图像空间 adapter 仍可能产生局部伪影或边界模糊。这一局限来自 adapter 缺乏显式语义和结构建模，后续可引入编辑区域 mask、跨注意力热图或感知损失进一步增强结构约束。
+
+\subsubsection{小结}
+
+本节补充的低步数蒸馏实验说明，Qwen-Image-Edit 的推理加速可以从两个层面实现：一是通过轻量 Gated Residual Adapter 在图像空间修复 4-step 输出，带来约 $9.4\times$ 加速且显著提升背景保持；二是通过开源 Distill-LoRA 直接改善低步数去噪轨迹，将总耗时进一步压缩到约 6.8 秒。前者部署成本低、适合作为通用后处理模块；后者质量上限更高，适合作为最终高性能推理配置。
 
 
 \subsection{Qwen2511 GT/MTP/MoE 微调方案}
@@ -797,9 +885,13 @@ p(\{y_i\}_{i=1}^{N}\mid I,p)
 成员 & 主要职责 \\
 \midrule
 王溢韬 & EditAR baseline 复现，进行 Qwen2511 复现与微调改进方案（4.2节），包括 GT LoRA、MTP LoRA、MoE-Fusion Teacher LoRA 的设计和实现，在 MagicBrush-dev 上进行实验验证并给出指标对比；\\
+\midrule
 乔东铭 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+\midrule
 刘奕晨 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
-田凯文 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+\midrule
+田凯文 & 负责 Qwen-Image-Edit baseline 的复现与三类 baseline metric 测试结果整理；负责 Qwen-Image-Edit 低步数蒸馏加速部分，包括 4-step/40-step teacher-student 输出缓存、Gated Residual Adapter 训练、质量与速度对比以及可视化分析；\\
+\midrule
 桑皓彬 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
 \bottomrule
 \end{tabular}
