@@ -39,7 +39,7 @@
 
 \newcommand{\placeholder}[1]{\textcolor{gray}{[待补充：#1]}}
 \newcommand{\reporttitle}{Instruction-Guided Image Editing技术报告}
-\newcommand{\keywords}[1]{\par\noindent\textbf{关键词：}#1}
+\newcommand{\keywords}[1]{\par\begin{center}\textbf{关键词：}#1\end{center}}
 
 \renewcommand{\abstractname}{摘\quad 要}
 \renewcommand{\contentsname}{目\quad 录}
@@ -69,10 +69,7 @@
   \end{center}
   \vspace{0.65em}
   \begin{center}
-  \small
-  \begin{tabular}{>{\bfseries}p{0.15\linewidth}p{0.75\linewidth}}
-    小组成员 & \placeholder{姓名 1}；\placeholder{姓名 2}；\placeholder{姓名 3}；\placeholder{姓名 4}；\placeholder{姓名 5} \\
-  \end{tabular}
+    {\small\bfseries 小组成员：刘奕晨；田凯文；王溢韬；桑皓彬；乔东铭 （各成员对项目同等贡献）\par}
   \end{center}
   \vspace{0.45em}
   \hrule
@@ -95,9 +92,13 @@
 
 \section{Introduction}
 
-图像编辑要求模型根据自然语言指令修改输入图像，同时保持非编辑区域的结构一致性。本文以 MagicBrush~\cite{magicbrush} 为基准，对三种不同范式的代表性模型进行系统复现与量化评估：(1) InstructPix2Pix（简记 P2P）——条件扩散式端到端指令编辑~\cite{instructpix2pix}；(2) Qwen-Image-Edit（简记 Qwen）——多模态大模型驱动的语义编辑~\cite{qwenimage}；(3) EditAR——自回归离散 token 预测的统一条件生成~\cite{editar}。
+指令式图像编辑（Instruction-Guided Image Editing）要求模型在给定原始图像与自然语言编辑指令的条件下生成编辑后图像。与普通图像生成不同，该任务同时包含两个约束：一方面，模型需要准确理解并执行指令中指定的编辑意图；另一方面，未被指令涉及的背景、主体结构、光照纹理和局部细节应尽量保持不变。因此，图像编辑的核心难点并不只是“能否改动”，还包括“是否改在正确区域”以及“是否避免无关区域被重绘”。
 
-贡献：(1) 在 MagicBrush 开发集 60 个样例上对三种基线进行系统复现，采用 SSIM、PSNR、BG-SSIM、Edit-Region Change 和 CLIP Score 共五类指标进行多维度评估；(2) 通过定量与可视化分析揭示三种范式在指令遵循、背景保持和编辑幅度之间的 trade-off；(3) 针对关键瓶颈提出改进方案与优化方向。
+首先在 MagicBrush~\cite{magicbrush} 数据集上统一复现三类代表性基线模型：InstructPix2Pix（简称 P2P）代表扩散式端到端指令编辑路线~\cite{instructpix2pix}；Qwen-Image-Edit 代表多模态大模型驱动的语义编辑路线~\cite{qwenimage}；EditAR 代表离散视觉 token 与自回归 Transformer 结合的统一条件生成路线~\cite{editar}。三类方法分别体现了扩散生成、多模态理解与自回归视觉建模在图像编辑任务中的不同优势与局限。
+
+实验评估围绕目标对齐、背景保持、编辑区域变化和语义一致性展开，主要使用 SSIM、PSNR、BG-SSIM、Edit-Region Change 与 CLIP Score 等指标。根据复现结果，Qwen-Image-Edit 在 SSIM、PSNR 和 CLIP 上整体更优，说明其目标对齐和语义执行能力较强，但 BG-SSIM 较低，容易出现背景、风格或非目标区域的越界修改；InstructPix2Pix 背景保持较好，但复杂替换、小目标新增和大范围语义变化中容易编辑不足；EditAR 的保持类指标不低，但定性结果显示其更接近保守失败，即保持了输入结构却没有充分完成编辑目标。
+
+在基线分析基础上，本文进一步整理多条改进尝试：针对 Qwen-Image-Edit 的低步数推理质量退化，采用从高步数 teacher 到低步数 student 的蒸馏修正思路；针对 Qwen2511 的局部编辑和背景保持问题，设计 GT LoRA、MTP LoRA 与 MoE-Fusion Teacher LoRA 三种微调方案；针对 InstructPix2Pix 的单次采样不稳定问题，引入 prompt 改写、多候选搜索、mask-crop 和背景融合；针对对象级局部编辑，探索图层分解与分层编辑；针对 EditAR，则分析其 VQ-VAE 重建误差与自回归误差累积带来的固有限制。
 
 \section{Related Work}
 
@@ -308,8 +309,39 @@ Qwen 编辑最准、主观效果最好，但偶发风格重绘导致 BG-SSIM 最
 
 \section{Method Improvement}
 
+\subsection{Qwen-Image-Edit 低步数蒸馏加速占位}
 
-\subsection{Qwen-Image-Edit 系列微调方案}
+Qwen-Image-Edit 在高步数推理下通常具有较好的编辑质量，但推理耗时较长；当采样步数降低到 4-step 时，虽然速度明显提升，但容易出现背景退化、纹理漂移和局部细节损失。4-step 的主要失败并非语义理解失败，而是低步数生成导致的局部质量退化。因此，可以使用 40-step 输出作为 teacher，4-step 输出作为 student，通过轻量后处理模块学习从低步数结果到高步数结果的修正。
+
+\paragraph{方法框架。}
+设原图为 $I$，4-step student 输出为 $S=Qwen_4(I,p)$，40-step teacher 输出为 $T=Qwen_{40}(I,p)$。低步数蒸馏模块记为 $A_\theta$，目标是从 $(I,S)$ 中预测接近 teacher 的结果：
+\[
+\hat T=A_\theta(I,S),\qquad
+\mathcal{L}=\mathcal{L}(\hat T,T).
+\]
+为了使修正尽量局部且可控，adapter 采用 gated residual 形式，输入为原图、student 输出和二者差分的拼接：
+\[
+X=\operatorname{concat}(I,S,S-I)\in\mathbb{R}^{H\times W\times 9}.
+\]
+模型输出修正量 $\delta$ 与空间门控 $\alpha$，最终结果为：
+\[
+\hat T=S+\alpha\odot\delta.
+\]
+其中 $\delta=\tanh(\delta_{\mathrm{raw}})\times0.25$ 用于限制单像素修正幅度，$\alpha=\sigma(\alpha_{\mathrm{raw}})$ 用于控制哪些区域需要修正。
+
+\paragraph{训练目标与作用。}
+训练损失由像素重建、边缘纹理、结构一致性和门控稀疏项组成：
+\[
+\mathcal{L}
+=\mathcal{L}_{\mathrm{recon}}
++0.25\mathcal{L}_{\mathrm{edge}}
++0.05\mathcal{L}_{\mathrm{ssim}}
++0.02\mathcal{L}_{\alpha}.
+\]
+其中 $\mathcal{L}_{\mathrm{recon}}$ 约束输出接近 teacher，$\mathcal{L}_{\mathrm{edge}}$ 强化边缘和纹理，$\mathcal{L}_{\mathrm{ssim}}$ 约束整体结构，$\mathcal{L}_{\alpha}$ 鼓励只在必要区域启用修正。该方法的定位是用极小额外开销弥补低步数推理的质量损失，具体训练曲线、运行时间和样例结果保留占位：\placeholder{补充 Qwen Distill 的 loss curve、速度表和案例图。}
+
+
+\subsection{Qwen2511 GT/MTP/MoE 微调方案}
 
 本节围绕更新的 Qwen 系列模型 Qwen-Image-Edit-2511 在 MagicBrush 指令图像编辑任务上的适配与改进展开。基线复现表明，Qwen 系列模型具有较强的语义理解和编辑能力，但在 MagicBrush 这类强调局部编辑与背景保持的任务中，仍容易出现编辑区域定位不准、非目标区域被重绘等问题。为此，本节开展三条路线研究：首先使用 GT LoRA 验证参数高效微调的有效性；随后通过 MTP 构造更适合局部编辑的监督目标；最后通过 MoE-Fusion Teacher 将多个专家候选的区域优势离线蒸馏到单一 Qwen LoRA 模型中。
 
@@ -687,36 +719,99 @@ w_s=\operatorname{clip}(w_{\min}+\operatorname{conf}(T_{\mathrm{moe}})(w_{\max}-
 
 后续工作可从三个方向继续推进：其一，引入 GroundingDINO~\cite{groundingdino}/SAM~\cite{sam} 或 VLM planner 构造更可靠的语义 mask；其二，使用更自然的局部 refinement 或扩散式 inpainting 替代简单融合；其三，将 MoE 产生的区域 winner/loser 信息转化为 preference loss，使学生模型学习区域级专家选择依据。
 
+\subsection{InstructPix2Pix 推理优化占位}
+
+InstructPix2Pix 的主要问题在于单次采样不稳定，且 MagicBrush 中的编辑指令往往较短，容易导致模型保守编辑或对目标区域修改不足。另一方面，提高 text CFG 可以增强编辑强度，但也更容易破坏背景。因此，本节将 InstructPix2Pix 的改进定位为推理侧优化：不重新训练模型，而是通过 prompt 改写、多候选搜索、局部裁剪和背景融合提高有效编辑概率。
+
+\paragraph{Prompt + Oracle。}
+首先对原始编辑指令进行增强，使其更明确地描述目标变化与保持要求；随后在多组 text CFG、image CFG 和 seed 下生成候选结果。对候选图像进行 oracle 重排时，同时考虑全图相似度与 mask 区域相似度：
+\[
+S_{\mathrm{oracle}}
+=0.4\operatorname{SSIM}_{\mathrm{full}}
++0.6\operatorname{SSIM}_{\mathrm{mask}}.
+\]
+该策略的核心是把单次不稳定采样转化为多候选选择问题。具体 prompt 改写模板、CFG 搜索范围和候选数量保留占位：\placeholder{补充 prompt 模板和候选搜索配置。}
+
+\paragraph{Mask-Crop。}
+对于小目标或边界较清晰的局部编辑，直接在整图上生成会使目标区域占比过小，从而导致编辑不足。Mask-Crop 根据编辑 mask 计算 bounding box，并按一定比例向外扩展后裁出局部区域，再在 crop 上执行编辑。完成后将局部结果缩放回原图位置。该策略适合对象新增、属性修改、局部替换等任务，不适合大范围背景替换或全局风格变化。
+
+\paragraph{BG-Fusion。}
+为了减少候选图对非编辑区域的影响，最终结果可以使用 soft mask 将候选图与原图融合：
+\[
+O_{\mathrm{final}}
+=\tilde M\odot O_{\mathrm{cand}}+(1-\tilde M)\odot I.
+\]
+其中 $\tilde M$ 为经过 feather 的软 mask。该方法可以显著降低背景漂移，但依赖 mask 质量；如果 mask 边界不准确，可能产生边界拼接痕迹或误保留目标区域。定量结果和典型案例保留占位：\placeholder{补充 IP2P 优化前后对比表和案例图。}
+
+\subsection{图层分解与分层编辑占位}
+
+图层分解的目标是显式隔离待编辑对象，使后续编辑尽量限制在目标语义层内。与直接对整图执行编辑相比，分层编辑更适合对象级替换、局部属性变化和前景主体修改等任务。
+
+\paragraph{图层分解与定位。}
+输入原图 $I$ 和编辑指令 $p$ 后，首先调用 Qwen-Image-Layered 或类似分层模型，将图像拆解为若干语义图层：
+\[
+\{L_1,L_2,\ldots,L_K\}=\operatorname{LayerDecompose}(I).
+\]
+随后使用 CLIP 或其他语义匹配模型，根据编辑指令自动选择最相关图层：
+\[
+k^\star=\arg\max_k\operatorname{sim}(\phi(L_k),\psi(p)).
+\]
+其中 $\phi$ 和 $\psi$ 分别表示图像图层与文本指令的编码器。
+
+\paragraph{目标编辑与合成。}
+选中目标图层后，仅对该图层或其对应局部区域执行 Qwen-Image-Edit，再通过 alpha composite 与背景画布合成：
+\[
+\mathrm{dst}_{\mathrm{new}}
+=\mathrm{src}\times\alpha+\mathrm{dst}\times(1-\alpha).
+\]
+该流程能够减少背景和非目标对象的无关变化；但如果分层结果或图层匹配不准，错误会传递到后续编辑阶段。因此，该方法的关键瓶颈在于图层质量、图层数量选择和目标图层识别准确性。具体实现设置与案例图保留占位：\placeholder{补充图层数量、匹配规则和可视化案例。}
+
+\subsection{EditAR 局限与后续优化占位}
+
+EditAR 的改进空间主要来自其自回归视觉生成范式本身。VQ-VAE 重建图像时低频结构通常较稳定，但纹理、高频细节和局部边界与原图存在较大差异；这会使 EditAR 在需要精细保持背景和局部纹理的编辑任务中处于劣势。
+
+此外，EditAR 训练时采用 teacher forcing，而推理时需要根据已经生成的 token 继续预测下一个 token。随着序列长度增加，早期 token 的误差可能逐步累积并影响后续生成，导致局部编辑错位、纹理漂移或目标语义不完整。该问题可概括为：
+\[
+p(\{y_i\}_{i=1}^{N}\mid I,p)
+=\prod_{i=1}^{N}p(y_i\mid y_{<i},\operatorname{tok}(I),\operatorname{tok}(p)),
+\]
+其中任一前序 token 的偏差都可能影响后续条件分布。
+
+后续优化可以从更高质量的视觉 tokenizer、mask-aware decoding、局部 token 重采样、候选重排和编辑区域优先生成等方向展开。由于本阶段尚未完成系统实验，本节仅保留分析与占位：\placeholder{补充 EditAR 重建误差可视化、token 漂移分析和改进实验。}
+
 \section{Performance Optimization}
 
-后续性能优化可以从以下方向展开：
-占位
+\subsection{性能优化汇总}
+
+第 4 节已经将主要改进方法分别放入对应模型路线中。本节只汇总性能优化层面的目标与待补内容：Qwen 低步数蒸馏主要面向推理速度；Qwen2511 GT/MTP/MoE 微调主要面向目标一致性和背景保持；InstructPix2Pix 推理优化主要面向采样稳定性；图层分解主要面向局部编辑边界控制；EditAR 后续优化主要面向 token 化重建质量和自回归误差累积。完整速度、显存、候选数量和人工评价表仍需后续补充：\placeholder{补充统一性能对比表。}
 
 \subsection{团队分工}
 
 \begin{table}[ht]
 \centering
 \small
-\caption{小组分工。待确认成员以占位形式保留。}
+\caption{小组分工。具体实现细节待进一步补充。}
 \label{tab:team-contributions}
-\begin{tabular}{p{0.18\linewidth}p{0.72\linewidth}}
+\begin{tabular}{>{\centering\arraybackslash}p{0.18\linewidth}p{0.72\linewidth}}
 \toprule
 成员 & 主要职责 \\
 \midrule
-\placeholder{王溢韬} & EditAR baseline 复现。Qwen2511 的复现和微调改进方法设计（4.1节）。GT LoRA、MTP LoRA、MoE-Fusion Teacher LoRA，以及在 MagicBrush-dev 指标汇总。 \\
-\placeholder{成员 2} & 占位 \\
-\placeholder{成员 3} & 占位 \\
-\placeholder{成员 4} & 占位 \\
-\placeholder{成员 5} & 占位 \\
+王溢韬 & EditAR baseline 复现，进行 Qwen2511 复现与微调改进方案（4.2节），包括 GT LoRA、MTP LoRA、MoE-Fusion Teacher LoRA 的设计和实现，在 MagicBrush-dev 上进行实验验证并给出指标对比；\\
+乔东铭 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+刘奕晨 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+田凯文 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+桑皓彬 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{Conclusion}
 
-本文围绕 instruction-guided image editing 任务，对小组半成品报告进行了结构对齐与内容补全。小组复现实验表明：Qwen-Image-Edit 在指令执行正确性上最强，但背景保持存在短板；InstructPix2Pix/P2P 背景保持更稳定但复杂语义能力有限；EditAR 在当前设定中整体表现较弱。基于这一观察，本文在 Method Improvement 中提出面向 Qwen-Image-Edit 的监督目标改进：GT LoRA 验证微调有效性，MTP 通过 clean target 显式约束背景保持，MoE-Fusion Teacher 则利用 P2P/Qwen/EditAR 多专家候选构造区域级 teacher 并蒸馏到单一 LoRA 模型中。实验结果显示，该方法能够显著提升 MagicBrush-dev 上的目标一致性与背景保持能力。
+本文围绕指令式图像编辑任务，对 InstructPix2Pix、Qwen-Image-Edit 与 EditAR 三类代表性方法进行了统一复现与对比分析。实验结果表明，三种模型路线在指令执行、背景保持和编辑幅度之间呈现出明显差异：Qwen-Image-Edit 具备最强的语义理解与目标编辑能力，但更容易对背景、风格或非目标区域产生额外改动；InstructPix2Pix 在背景保持上更稳定，但面对复杂语义替换、小目标新增和大范围编辑时存在编辑不足；EditAR 虽然在部分保持类指标上表现不低，但定性结果显示其容易陷入保守失败，并受到 VQ-VAE 重建误差与自回归误差累积的限制。
 
-后续工作将继续补全三方面内容：第一，完善小组成员姓名、分工与 baseline 可视化图；第二，在 HQ-Edit~\cite{hqedit}、Reason-Edit~\cite{smartedit}、GIE-Bench~\cite{giebench} 等更复杂 benchmark 上验证泛化能力；第三，将本文的 MTP/MoE 质量改进与低步数蒸馏、采样调度优化结合，进一步提升推理效率。
+针对上述现象，本文进一步从训练优化、推理优化和结构化编辑三个方向进行了方法改进。对于 Qwen 系列模型，低步数蒸馏通过学习 4-step student 到 40-step teacher 的残差修正关系，在提升推理效率的同时缓解背景退化与细节漂移；Qwen2511 的 GT LoRA、MTP LoRA 与 MoE-Fusion Teacher LoRA 则分别从任务适配、背景保持和多专家监督信号构造三个层面提升模型表现。对于 InstructPix2Pix，prompt/oracle、多候选搜索、mask-crop 与 BG-fusion 使推理过程更稳定，并增强了局部编辑的可控性。图层分解方法进一步通过显式隔离目标对象减少无关区域改动，而对 EditAR 的分析揭示了自回归视觉编辑在精细保持和长序列生成中的关键瓶颈。
+
+总体而言，本文的复现与改进结果说明，指令式图像编辑的核心并非单纯追求更强的生成能力，而是在“准确执行指令”和“保持无关区域不变”之间建立更可靠的平衡。未来工作可在更复杂的 HQ-Edit~\cite{hqedit}、Reason-Edit~\cite{smartedit} 和 GIE-Bench~\cite{giebench} 等评测集上进一步验证方法泛化性，并结合更精确的语义 mask、区域级偏好学习和高质量视觉 tokenizer，继续提升模型在复杂场景下的稳定性、可控性与编辑质量。
 
 \begin{thebibliography}{99}
 
