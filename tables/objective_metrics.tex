@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\small
+\caption{MagicBrush-dev 客观指标。TO 表示 Target--Output，IO 表示 Input--Output。MoE Teacher 为训练期 teacher，其他 LoRA 方法为可部署学生模型。}
+\label{tab:objective-release}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & TO SSIM$\uparrow$ & TO PSNR$\uparrow$ & BG-SSIM$\uparrow$ & IO SSIM$\uparrow$ & IO PSNR$\uparrow$ & Edit Change \\
+\midrule
+Qwen2511 Base & 0.450 & 14.29 & 0.696 & 0.450 & 14.37 & 0.135 \\
+GT LoRA & 0.696 & 18.24 & 0.821 & 0.702 & 18.42 & 0.043 \\
+MTP LoRA & 0.740 & 18.46 & 0.828 & 0.761 & 19.38 & 0.172 \\
+MoE Teacher & 0.881 & 22.84 & 0.993 & 0.951 & 29.25 & 0.115 \\
+MoE Teacher LoRA & \textbf{0.763} & \textbf{19.01} & \textbf{0.852} & \textbf{0.792} & \textbf{20.02} & 0.167 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

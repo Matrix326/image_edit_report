@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\caption{MagicBrush-dev Qwen3-VL/MLLM 评测指标。MoE Teacher 未运行 MLLM，因此不列入该表。}
+\label{tab:mllm-release}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lrrrr}
+\toprule
+Method & Preference$\uparrow$ & Instruction$\uparrow$ & Background$\uparrow$ & Target$\uparrow$ \\
+\midrule
+Qwen2511 Base & 7.07 & 9.23 & 9.29 & 8.85 \\
+GT LoRA & 6.88 & 8.81 & 9.27 & 8.49 \\
+MTP LoRA & 6.75 & 8.72 & 9.18 & 8.25 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
