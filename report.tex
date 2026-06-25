@@ -807,29 +807,218 @@ w_s=\operatorname{clip}(w_{\min}+\operatorname{conf}(T_{\mathrm{moe}})(w_{\max}-
 
 后续工作可从三个方向继续推进：其一，引入 GroundingDINO~\cite{groundingdino}/SAM~\cite{sam} 或 VLM planner 构造更可靠的语义 mask；其二，使用更自然的局部 refinement 或扩散式 inpainting 替代简单融合；其三，将 MoE 产生的区域 winner/loser 信息转化为 preference loss，使学生模型学习区域级专家选择依据。
 
-\subsection{InstructPix2Pix 推理优化占位}
+\subsection{InstructPix2Pix 推理优化}
+\label{sec:p2p-inference-optimization}
 
-InstructPix2Pix 的主要问题在于单次采样不稳定，且 MagicBrush 中的编辑指令往往较短，容易导致模型保守编辑或对目标区域修改不足。另一方面，提高 text CFG 可以增强编辑强度，但也更容易破坏背景。因此，本节将 InstructPix2Pix 的改进定位为推理侧优化：不重新训练模型，而是通过 prompt 改写、多候选搜索、局部裁剪和背景融合提高有效编辑概率。
+InstructPix2Pix 能够在无需输入编辑区域 mask 的情况下，根据自然语言指令直接完成图像编辑，具有推理流程简单、背景保持相对稳定等优点。然而，在 MagicBrush~\cite{magicbrush} 开发集上的复现实验表明，其单次采样结果具有较明显的随机性：同一输入图像和编辑指令在不同随机种子下可能得到差异较大的结果；对于小目标新增、局部物体替换和复杂空间关系编辑，模型还容易出现编辑幅度不足、目标对象生成不完整或编辑位置偏移等问题。
 
-\paragraph{Prompt + Oracle。}
-首先对原始编辑指令进行增强，使其更明确地描述目标变化与保持要求；随后在多组 text CFG、image CFG 和 seed 下生成候选结果。对候选图像进行 oracle 重排时，同时考虑全图相似度与 mask 区域相似度：
-\[
-S_{\mathrm{oracle}}
-=0.4\operatorname{SSIM}_{\mathrm{full}}
-+0.6\operatorname{SSIM}_{\mathrm{mask}}.
-\]
-该策略的核心是把单次不稳定采样转化为多候选选择问题。具体 prompt 改写模板、CFG 搜索范围和候选数量保留占位：\placeholder{补充 prompt 模板和候选搜索配置。}
+进一步分析发现，InstructPix2Pix 中的文本引导强度与图像保持强度之间存在明显冲突。增大 text CFG 可以使模型更积极地执行指令，但也可能导致背景纹理、人物外观和整体色调发生变化；增大 image CFG 能够增强对原图的保持，却可能使模型过于保守，最终几乎不执行编辑。因此，本节不直接修改扩散模型主体结构，而是从推理过程出发，依次探索指令改写、多参数候选搜索、Oracle 候选重排、Mask-Crop 局部编辑以及背景保持融合等策略。
 
-\paragraph{Mask-Crop。}
-对于小目标或边界较清晰的局部编辑，直接在整图上生成会使目标区域占比过小，从而导致编辑不足。Mask-Crop 根据编辑 mask 计算 bounding box，并按一定比例向外扩展后裁出局部区域，再在 crop 上执行编辑。完成后将局部结果缩放回原图位置。该策略适合对象新增、属性修改、局部替换等任务，不适合大范围背景替换或全局风格变化。
+\subsubsection{基线推理流程}
 
-\paragraph{BG-Fusion。}
-为了减少候选图对非编辑区域的影响，最终结果可以使用 soft mask 将候选图与原图融合：
-\[
-O_{\mathrm{final}}
-=\tilde M\odot O_{\mathrm{cand}}+(1-\tilde M)\odot I.
-\]
-其中 $\tilde M$ 为经过 feather 的软 mask。该方法可以显著降低背景漂移，但依赖 mask 质量；如果 mask 边界不准确，可能产生边界拼接痕迹或误保留目标区域。定量结果和典型案例保留占位：\placeholder{补充 IP2P 优化前后对比表和案例图。}
+本文实现了 InstructPix2Pix 的批量推理流程。输入图像被等比例缩放至最长边约 512，并将宽高规整为 64 的整数倍；随后，VAE 编码器生成图像条件潜变量，文本编码器生成指令条件，最后使用 K-Diffusion 的 Euler Ancestral 采样器完成反向去噪。
+
+InstructPix2Pix 同时使用文本条件和图像条件进行分类器无关引导，其双条件引导形式为
+\begin{equation}
+\begin{aligned}
+\widetilde{\epsilon}_{\theta}(z_t,c_I,c_T)
+={}&\epsilon_{\theta}(z_t,\varnothing,\varnothing)\\
+&+s_I\!\left[\epsilon_{\theta}(z_t,c_I,\varnothing)-\epsilon_{\theta}(z_t,\varnothing,\varnothing)\right]\\
+&+s_T\!\left[\epsilon_{\theta}(z_t,c_I,c_T)-\epsilon_{\theta}(z_t,c_I,\varnothing)\right].
+\end{aligned}
+\label{eq:ip2p-cfg}
+\end{equation}
+其中，$c_I$ 和 $c_T$ 分别表示图像条件与文本条件，$s_I$ 和 $s_T$ 分别表示 image CFG 与 text CFG。基线采用 100 个采样步，设置 $s_T=7.5$、$s_I=1.5$，随机种子固定为 42。该配置在简单属性编辑中较稳定，但在小目标新增、对象替换和空间关系编辑中容易出现编辑不足，因此需要进一步优化推理策略。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\linewidth]{figures/p2p_inference_pipeline.png}
+\caption{InstructPix2Pix 推理优化总体流程。}
+\label{fig:p2p-inference-pipeline}
+\end{figure}
+
+\subsubsection{基于指令改写的语义增强}
+
+MagicBrush 中的指令通常较短，例如 ``add a hat'' 或 ``turn the car red''，模型有时会将其理解为轻微纹理变化。为增强语义约束，本文根据动作词进行规则化 Prompt Rewrite：对新增类指令强调对象应清晰、完整并位于指定位置；对替换类指令强调彻底替换；对属性修改与背景编辑强调变化应明显、真实且完整。该方法能够增强编辑幅度，但过强的文本引导也可能放大背景重绘，因此本文将其作为多候选生成策略，而非直接采用单次结果。
+
+\subsubsection{多参数候选搜索}
+
+固定参数难以同时适应所有编辑类型，因此本文联合搜索 text CFG、image CFG 与随机种子：
+\begin{equation}
+\begin{aligned}
+s_T&\in\{7.5,9.0,10.5,12.0\},\qquad
+s_I\in\{1.0,1.2,1.5\},\\
+r&\in\{0,1,2,3\}.
+\end{aligned}
+\label{eq:p2p-search-space}
+\end{equation}
+每个样例共生成 $4\times3\times4=48$ 个候选。较大的 text CFG 倾向于增强编辑，较大的 image CFG 倾向于保持原图，不同随机种子则提供形状、位置和纹理上的多样性。该策略将单次采样的不稳定问题转化为候选集合中的搜索问题。
+
+\subsubsection{Oracle 候选重排}
+
+为分析多候选搜索的理论上限，本文在 MagicBrush 开发集上利用目标图像 $G$ 和编辑掩膜 $M$ 进行 Oracle 重排。对候选图像 $C_j$，分别计算全图 SSIM 与编辑区域 SSIM：
+\begin{equation}
+\begin{aligned}
+S_{\mathrm{full}}(C_j)&=\operatorname{SSIM}(C_j,G),\\
+S_{\mathrm{edit}}(C_j)&=\operatorname{SSIM}\!\left(C_j[\operatorname{bbox}(M)],G[\operatorname{bbox}(M)]\right).
+\end{aligned}
+\label{eq:p2p-oracle-ssim}
+\end{equation}
+综合评分及最优候选选择为
+\begin{equation}
+\begin{aligned}
+S_{\mathrm{oracle}}(C_j)&=0.4S_{\mathrm{full}}(C_j)+0.6S_{\mathrm{edit}}(C_j),\\
+C^{\star}&=\underset{C_j}{\arg\max}\;S_{\mathrm{oracle}}(C_j).
+\end{aligned}
+\label{eq:p2p-oracle-selection}
+\end{equation}
+提高编辑区域权重可以避免“几乎不修改原图”的保守候选仅凭较高的整体相似度被选中。由于该方法使用了目标图像，它只用于开发集上的上限分析，真实测试阶段仍需使用指令一致性、背景相似度或无参考质量指标进行替代。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/p2p_prompt_oracle_cases.png}
+\caption{固定参数基线、Prompt Rewrite 与多候选 Oracle 的定性比较。}
+\label{fig:p2p-prompt-oracle}
+\end{figure}
+
+\subsubsection{基于 Mask-Crop 的局部编辑}
+
+对于小目标编辑，整图缩放后目标区域在潜空间中占比过小。本文首先根据二值掩膜计算最小外接矩形，并向外扩张以保留上下文：
+\begin{equation}
+\begin{aligned}
+B&=(x_1,y_1,x_2,y_2)=\operatorname{BBox}(M),\\
+w'&=\max\!\left((1+\rho)w,w_{\min}\right),\qquad
+h'=\max\!\left((1+\rho)h,h_{\min}\right),
+\end{aligned}
+\label{eq:p2p-expanded-size}
+\end{equation}
+其中，$\rho=0.35$，$w_{\min}=h_{\min}=128$。扩张后的区域被单独送入 InstructPix2Pix，编辑完成后再缩放并粘贴回原图。
+
+全图候选与局部候选的参数分别为
+\begin{equation}
+\begin{aligned}
+s_T^{\mathrm{full}}&\in\{9.0,11.0,13.0\},&
+ s_I^{\mathrm{full}}&\in\{0.8,1.0,1.2\},\\
+s_T^{\mathrm{crop}}&\in\{11.0,13.0,15.0\},&
+ s_I^{\mathrm{crop}}&\in\{0.7,0.9,1.1\}.
+\end{aligned}
+\label{eq:p2p-crop-cfg-search}
+\end{equation}
+两类候选均采用四个随机种子，因此每个样例生成 36 个全图候选和 36 个局部候选，共 72 个候选。重排评分进一步提高编辑区域权重：
+\begin{equation}
+S_{\mathrm{crop}}(C_j)=0.2S_{\mathrm{full}}(C_j)+0.8S_{\mathrm{edit}}(C_j).
+\label{eq:p2p-crop-score}
+\end{equation}
+Mask-Crop 能够提升小目标编辑强度，但可能丢失全局上下文或产生拼接边界，因此本文同时保留全图候选与局部候选。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/p2p_mask_crop_cases.png}
+\caption{全图编辑与 Mask-Crop 局部编辑的定性比较。}
+\label{fig:p2p-mask-crop}
+\end{figure}
+
+\subsubsection{背景保持融合}
+
+较高的文本引导虽然能增强编辑，但也可能改变非目标区域。本文从输出空间和潜空间两个层面进行背景保护。
+
+\paragraph{输出空间背景融合。}
+设候选输出为 $C$、输入图像为 $I$、平滑后的软掩膜为 $\widetilde{M}$，最终输出为
+\begin{equation}
+O_{\mathrm{fusion}}=\widetilde{M}\odot C+(1-\widetilde{M})\odot I.
+\label{eq:p2p-output-fusion}
+\end{equation}
+该方法能直接恢复非编辑区域，但无法协调阴影、反射和遮挡关系，边缘仍可能出现不自然现象。
+
+\paragraph{步级潜空间背景融合。}
+首先将编辑掩膜缩放至潜空间并进行轻微高斯模糊，定义背景保持掩膜 $P=1-\widetilde{M}_z$。在第 $t$ 个去噪步骤中，构造与当前噪声级别一致的原图潜变量，并与当前状态融合：
+\begin{equation}
+\begin{aligned}
+z_{\mathrm{orig}}^{(t)}&=z_{\mathrm{orig}}+\sigma_t\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I),\\
+z_t'&=(1-P_t)\odot z_t+P_t\odot z_{\mathrm{orig}}^{(t)},\qquad P_t=\alpha_tP.
+\end{aligned}
+\label{eq:p2p-latent-fusion}
+\end{equation}
+采样前 85\% 的步骤中设置 $\alpha_t=1$，最后 15\% 线性衰减至 0：
+\begin{equation}
+\alpha_t=
+\begin{cases}
+1, & t\leq0.85T,\\[2pt]
+1-\dfrac{t-0.85T}{0.15T}, & t>0.85T.
+\end{cases}
+\label{eq:p2p-dynamic-unlock}
+\end{equation}
+该策略在大部分去噪阶段锁定背景，并在后期逐渐释放边界以改善融合效果，无需增加额外可训练参数。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/p2p_bg_preserve_cases.png}
+\caption{原始候选、输出空间背景融合与步级潜空间融合的效果对比。}
+\label{fig:p2p-bg-preserve}
+\end{figure}
+
+\subsubsection{实验配置汇总}
+
+表~\ref{tab:p2p-inference-config} 汇总了主要推理配置。多候选方案首先在 MagicBrush 开发集前 20 个样例上进行快速验证。
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{InstructPix2Pix 推理优化配置。}
+\label{tab:p2p-inference-config}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{lccccc}
+\toprule
+方案 & Steps & Text CFG & Image CFG & Seeds & 候选数 \\
+\midrule
+固定参数 Baseline & 100 & 7.5 & 1.5 & 42 & 1 \\
+Prompt + Oracle & 50 & $\{7.5,9.0,10.5,12.0\}$ & $\{1.0,1.2,1.5\}$ & $\{0,1,2,3\}$ & 48 \\
+Oracle Crop：全图 & 50 & $\{9.0,11.0,13.0\}$ & $\{0.8,1.0,1.2\}$ & $\{0,1,2,3\}$ & 36 \\
+Oracle Crop：局部 & 50 & $\{11.0,13.0,15.0\}$ & $\{0.7,0.9,1.1\}$ & $\{0,1,2,3\}$ & 36 \\
+潜空间背景融合 & 100 & 7.5 & 1.5 & 42 & 1 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{结果分析}
+
+定性结果表明，多参数搜索提高了候选集合中出现有效编辑的概率；Prompt Rewrite 能增强新增、替换和属性变化，但也可能带来背景漂移；Mask-Crop 对小目标最有效，但可能损失全局上下文；背景融合则明显改善非编辑区域保持，其中像素融合更直接，潜空间融合的边界通常更自然。总体来看，各方法在编辑强度、背景保持和计算成本之间形成不同折中。
+
+\begin{table}[H]
+\centering
+\small
+\caption{InstructPix2Pix 推理策略的定性消融分析。}
+\label{tab:p2p-qualitative-ablation}
+\begin{tabular}{p{0.21\linewidth}p{0.34\linewidth}p{0.35\linewidth}}
+\toprule
+方法 & 主要优势 & 主要局限 \\
+\midrule
+固定参数 Baseline & 推理成本低，背景较稳定 & 复杂编辑和小目标编辑不足 \\
+Prompt Rewrite & 增强新增、替换和属性变化 & 可能引起背景与风格漂移 \\
+多候选 Oracle & 分析候选空间的理论上限 & 依赖目标图像，不能直接部署 \\
+Mask-Crop & 放大小目标区域，增强局部编辑 & 可能丢失全局上下文并产生接缝 \\
+输出空间 BG-Fusion & 直接恢复非编辑区域 & 对掩膜敏感，难以协调遮挡关系 \\
+潜空间融合 & 生成过程中约束背景，边界较自然 & 约束过强时会抑制必要的邻域变化 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/p2p_ablation_cases.png}
+\caption{InstructPix2Pix 不同推理优化策略的综合消融比较。}
+\label{fig:p2p-ablation}
+\end{figure}
+
+\subsubsection{局限性}
+
+当前方法仍存在三点局限：Oracle 重排依赖目标图像，只能用于开发集上限分析；多候选搜索最多需要 72 次扩散采样，计算成本较高；Mask-Crop 与背景融合依赖编辑掩膜，真实应用中还需借助自动定位模型估计编辑区域。此外，背景保持与编辑完整性之间仍需根据任务类型进行动态平衡。
+
+\subsubsection{小结}
+
+本节通过 Prompt Rewrite、多参数候选搜索、Oracle 重排、Mask-Crop 和背景保持融合逐步优化 InstructPix2Pix 推理。多候选搜索提高了有效编辑出现的概率，Mask-Crop 强化了小目标编辑，背景融合改善了非编辑区域保持，但也带来了额外计算开销和掩膜依赖。
+
 
 \subsection{图层分解与分层编辑占位}
 
@@ -888,7 +1077,7 @@ p(\{y_i\}_{i=1}^{N}\mid I,p)
 \midrule
 乔东铭 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
 \midrule
-刘奕晨 & \placeholder{补充 baseline 复现、推理优化或实验分析分工。} \\
+刘奕晨 & 负责 InstructPix2Pix baseline 的批量推理复现与推理侧优化，包括 MagicBrush 数据读取与结果生成、Prompt Rewrite、多组 text/image CFG 与随机种子候选搜索、基于目标图像和编辑 mask 的 Oracle 重排、Mask-Crop 局部编辑、背景保持融合及步级潜空间拦截，并完成对应的定性结果整理与失败案例分析； \\
 \midrule
 田凯文 & 负责 Qwen-Image-Edit baseline 的复现与三类 baseline metric 测试结果整理；负责 Qwen-Image-Edit 低步数蒸馏加速部分，包括 4-step/40-step teacher-student 输出缓存、Gated Residual Adapter 训练、质量与速度对比以及可视化分析；\\
 \midrule
