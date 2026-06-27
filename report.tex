@@ -895,7 +895,7 @@ D_i = (I_i^{old}, p_i, I_i^{new})
 
 在每一次训练迭代中，代码会读取一组 old、prompt 和 new 数据，对图像进行尺寸调整、归一化和 latent 编码，然后对目标图 latent 加入噪声，送入模型进行预测。模型输出结果与训练目标之间计算 loss，并通过反向传播更新 LoRA 参数。训练完成后，程序会将 LoRA 权重保存到指定输出目录中，得到 \texttt{pytorch\_lora\_weights.safetensors} 文件。
 
-\subsection{文本 prompt 编码}
+\subsubsection{文本 prompt 编码}
 
 对于每个文本编辑指令 \(p_i\)，代码会先通过 tokenizer 将其转换为 token 序列：
 
@@ -1207,7 +1207,7 @@ Projection LoRA 是唯一取得轻微正收益的方案：TO SSIM 从 \(0.7364\)
 
 \subsection{性能优化汇总}
 
-第 4 节已经将主要改进方法分别放入对应模型路线中。本节只汇总性能优化层面的目标与待补内容：Qwen 低步数蒸馏主要面向推理速度；Qwen2511 GT/MTP/MoE 微调主要面向目标一致性和背景保持；InstructPix2Pix 推理优化主要面向采样稳定性；图层分解主要面向局部编辑边界控制；EditAR 后续优化主要面向 token 化重建质量和自回归误差累积。完整速度、显存、候选数量和人工评价表仍需后续补充：\placeholder{补充统一性能对比表。}
+Qwen 低步数蒸馏主要面向推理速度；Qwen2511 GT/MTP/MoE 微调主要面向目标一致性和背景保持；InstructPix2Pix 推理优化主要面向采样稳定性；图层分解主要面向局部编辑边界控制；EditAR 后续优化主要面向 token 化重建质量和自回归误差累积。
 
 \subsection{团队分工}
 
@@ -1220,7 +1220,7 @@ Projection LoRA 是唯一取得轻微正收益的方案：TO SSIM 从 \(0.7364\)
 \toprule
 成员 & 主要职责 \\
 \midrule
-王溢韬 & 进行 EditAR baseline 复现，进行 Qwen2511 复现与并完成微调改进方案（4.2节），包括 GT LoRA、MTP LoRA、MoE-Fusion Teacher LoRA 三个方案的设计、实现、训练，在 MagicBrush-dev 上进行评估验证并给出指标对比，相关代码开源在\href{https://github.com/Matrix326/KeepEdit.git}{Matrix326/KeepEdit.git}\\
+王溢韬 & 进行 EditAR baseline 复现，进行 Qwen2511 复现与并完成微调改进方案（4.2节），包扩以真值为优化目标的 GT LoRA、增加掩码约束的 MTP LoRA、融合混合专家优势的 MoE-Fusion Teacher LoRA 三个方案的设计、实现、训练，在 MagicBrush-dev 上进行评估并给出指标对比\\
 \midrule
 乔东铭 & 负责 EditAR baseline 复现与 failure mode 分析，梳理 VQ-VAE 重建误差和自回归长程 distribution shift 问题；设计并实现 Backbone LoRA、Region LoRA、Contrast LoRA 与 Projection LoRA 等改进实验。 \\
 \midrule
@@ -1228,7 +1228,7 @@ Projection LoRA 是唯一取得轻微正收益的方案：TO SSIM 从 \(0.7364\)
 \midrule
 田凯文 & 负责 Qwen-Image-Edit baseline 的复现与三类 baseline metric 测试结果整理；负责 Qwen-Image-Edit 低步数蒸馏加速部分，包括 4-step/40-step teacher-student 输出缓存、Gated Residual Adapter 训练、质量与速度对比以及可视化分析；\\
 \midrule
-桑皓彬 & \placeholder{负责DiffusionCLIP baseline的复现，在对Qwen2511进行初步lora微调后，尝试将Qwen image-layer与Qwen2511结合，用openAI的CLIP模型识别各图层元素并与prompt对应，实现图片分层调整、保持背景不变性，并完成结果整理与失败案例分析} \\
+桑皓彬 & 负责DiffusionCLIP baseline的复现，在对Qwen2511进行初步lora微调后，尝试将Qwen image-layer与Qwen2511结合，用openAI的CLIP模型识别各图层元素并与prompt对应，实现图片分层调整、保持背景不变性，并完成结果整理与失败案例分析 \\
 \bottomrule
 \end{tabular}
 \end{table}
